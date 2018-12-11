@@ -15,7 +15,7 @@ int16_t TxBuffer[WOLFSON_PI_AUDIO_TXRX_BUFFER_SIZE];
 int16_t RxBuffer[WOLFSON_PI_AUDIO_TXRX_BUFFER_SIZE];
 
 __IO BUFFER_StateTypeDef buffer_offset = BUFFER_OFFSET_NONE;
-__IO uint8_t Volume = 70;
+__IO uint8_t Volume = 76;     // -6dB
 
 #define i2f(x)  ((float32_t)x/(2*32768.0))
 #define f2i(x)  ((int16_t)(x*2*32768))
@@ -37,20 +37,22 @@ __IO uint8_t Volume = 70;
  */
 typedef struct comp_conf_t{
     float32_t g;
+    float32_t g_;
     float32_t r;
     float32_t th;
     float32_t k;
-    float32_t att;
-    float32_t rlt; 
-    float32_t m;
-    float32_t c;
-    float32_t d;
-    float32_t g_;
-    float32_t m_;
-    float32_t c_;
     float32_t k1;
     float32_t k2;
-    float32_t satt;
+    float32_t k1_;
+    float32_t att;
+    float32_t rlt; 
+    uint32_t satt;
+    uint32_t srlt;
+    float32_t d;
+    float32_t m;
+    float32_t m_;
+    float32_t c;
+    float32_t c_;
 }comp_conf_t;
 
 typedef struct comp_t{
@@ -59,6 +61,9 @@ typedef struct comp_t{
     uint32_t sba;
     uint32_t sbr;
     uint32_t gate;
+    uint32_t attacking;
+    uint32_t releasing;
+    uint32_t rd;
     int32_t s;
 }comp_t;
 
@@ -77,7 +82,7 @@ void init(void)
     //TEST_Init();
 }
 
-comp_t comp_init(comp_conf_t *c)
+void comp_param_init(comp_conf_t *c)
 {
     // Apply parameters limits
     if(c->g > 10)          c->g = 10;
@@ -102,17 +107,34 @@ comp_t comp_init(comp_conf_t *c)
     c->m_ = powf(10, c->m / 20);      // makeup gain level
     c->c_ = powf(10, c->c / 20);      // clip level
     c->k = 0.5 * c->k;                // knee-width level
-    c->k1 = c->th -c->k;                 // knee minimum level (dB)
-    c->k2 = c->th +c->k;                 // knee maximum level (dB)
+    c->k1 = c->th -c->k;              // knee minimum level (dB)
+    c->k1_ = powf(10, c->k1 / 20);    // knee minimum level
+    c->k2 = c->th +c->k;              // knee maximum level (dB)
+
     //if(r == 0) r = 1;           // protects for division
     c->r = 1 / c->r;                  // ratio to multiply instead divide
     c->d = c->d / 10;                 // distortion ratio
-    c->satt = AUDIO_FREQUENCY_48K * c->att / 1000;     // attack (samples)
-    //c->srlt = AUDIO_FREQUENCY_48K * c-rlt / 1000;     // release (samples)
+    c->satt = floor(AUDIO_FREQUENCY_48K * c->att / 1000);   // attack (samples)
+    c->srlt = floor(AUDIO_FREQUENCY_48K * c->rlt / 1000);   // release (samples)
+}
 
-    comp_t r;
-    r.param = c;
-    return r;
+void comp_init_mono(comp_conf_t *c, comp_t *m)
+{
+    comp_param_init(c);
+    m->param = c;
+    m->sba = m->sbr = m->gate = m->attacking = m->releasing = 0;
+    m->s = 1;
+    m->rd = 1;
+}
+
+void comp_init_stereo(comp_conf_t *c, comp_t *sl, comp_t *sr)
+{
+    comp_param_init(c);
+    sl->param = sr->param = c;
+    sl->sba = sl->sbr = sl->gate = sl->attacking = sl->releasing = 0;
+    sr->sba = sr->sbr = sr->gate = sr->attacking = sr->releasing = 0;
+    sl->s = sr->s = 1;
+    sl->rd = sr->rd = 1;
 }
 
 int16_t comp(int16_t b, comp_t *c)
@@ -128,47 +150,85 @@ int16_t comp(int16_t b, comp_t *c)
     else             c->s = 1;
 
     // Threshold detection
-    if((c->s * c->x) > c->param->k1){
-        // Count samples before Attack
-        if(c->sba < c->param->satt) c->sba++;
-        else{
-            c->sbr = 0;
-            c->gate = TRUE;
-        }
-    }else{
-        // Threshold detection
-        if((c->s * c->x) < c->param->k1){
-            // Count samples before Attack
-            if(c->sbr <= c->param->srlt) c->sbr++;
-            else{
+    if((c->s * c->x) > c->param->k1_){      // Attack
+        if(!c->param->satt){    
+            c->attacking = TRUE;            // zero-attack case
+            c->rd = c->param->r;            // Fully closed
+        }else if(!c->gate){
+            if(!c->attacking){
+                c->attacking = TRUE;
                 c->sba = 0;
+                c->releasing = FALSE;
+                c->gate = TRUE;
+            }
+        }
+    }else{                                  // Release
+        if(!c->param->srlt){                // zero-release case
+            c->releasing = TRUE;
+            if(c->gate){
                 c->gate = FALSE;
+                c->rd = 1;                  // Fully open
+            }
+        }else if(c->gate){
+            if(!c->releasing){
+                c->releasing = TRUE;
+                c->sbr = 0;
+                c->attacking = FALSE;
+                c->gate = TRUE;
             }
         }
     }
 
+    // Ballistic
+    if(c->attacking){
+        if(c->sba < c->param->satt){
+            // Count samples before Attack
+            c->sba++;
+            // Closing transition
+            c->rd = c->param->r +(1 -c->param->r) * fasterexp(-5 * c->sba / c->param->satt);
+            //c->rd = c->param->r +(1 -c->param->r) * expf(-5 * c->sba / c->param->satt);
+            c->attacking = TRUE;
+        }else{
+            c->attacking = FALSE;
+        }
+    }else if(c->releasing){
+        // Count samples before Release
+        if(c->sbr < c->param->srlt){
+            c->sbr++;
+            // Opening transition
+            c->rd = 1 +(1 -c->param->r) * fasterexp(-5 * c->sbr / c->param->srlt);
+            //c->rd = 1 +(1 -c->param->r) * expf(-5 * c->sbr / c->param->srlt);
+            c->releasing = TRUE;
+        }else{
+            c->releasing = FALSE;
+            c->gate = FALSE;
+        }
+    }
+
+    // Adds a bit of saturation
+    if(c->param->srlt && c->param->satt){
+        c->x -= (c->s * c->param->d * (-1 +fasterexp(c->s * c->x)));
+        //c->x -= (c->s * c->param->d * (-1 +expf(c->s * c->x)));
+    }
+
     // Compression
-    if(c->gate){
+    if(c->gate || c->attacking || c->releasing){
         // Convert to dB
-        //c->x = 20 * fasterlog10(c->s * c->x);
-        c->x = 20 * log10f(c->s * c->x);
+        c->x = 20 * fasterlog10(c->s * c->x);
+        //c->x = 20 * log10f(c->s * c->x);
     
         // Soft knee
-        if(c->x > c->param->k2){
-            // Above knee region, hard compress:
-            c->x = ((c->x -c->param->th) * c->param->r) +c->param->th;
-        }else if(c->x > c->param->k1){
+        if(c->x < c->param->k2){
             // On knee region, compress using a second order interpolation
             c->x += ((c->param->r -1) * (c->x -c->param->th +c->param->k) * (c->x -c->param->th +c->param->k) / (4 * c->param->k));
+        }else{
+            // Above knee region, hard compress:
+            c->x = ((c->x -c->param->th) * c->param->r) +c->param->th;
         }
     
         // Get back from dB
-        //c->x = c->s * fasterpow(10, c->x / 20);
-        c->x = c->s * powf(10, c->x / 20);
-
-        // Adds a bit of saturation
-        //c->x -= (c->s * c->param->d * (-1 +fasterexp(c->s * c->x)));
-        //c->x -= (c->s * c->param->d * (-1 +expf(c->s * c->x)));
+        c->x = c->s * fasterpow(10, c->x / 20);
+        //c->x = c->s * powf(10, c->x / 20);
     }
 
     // Makeup gain
@@ -176,7 +236,6 @@ int16_t comp(int16_t b, comp_t *c)
 
     // Hard clip
     if((c->s * c->x) > c->param->c_) c->x = c->s * c->param->c_;
-
 
     // Convert back to int
     return f2i(c->x);
@@ -192,19 +251,63 @@ int main(int argc, char* argv[])
 
     // Creates the compressor setup
     comp_conf_t c;
-    c.g = 0;
-    c.r = 12;
-    c.th = -26;
-    c.k = 12;
-    c.att = 0;
-    c.rlt = 15;
-    c.m = 20;
-    c.c = -0.1;
-    c.d = 0;
+
+#define COMP_SETUP_DRUMS
+
+#ifdef COMP_SETUP_NONE
+    c.g = 0;                        // pre-gain level (dB)
+    c.r = 0;                        // compress ratio
+    c.th = -0;                      // threshold level (dB)
+    c.k = 0;                        // knee-width (dB)
+    c.att = 0;                      // attack (us)
+    c.rlt = 0;                      // release (ms)
+    c.m = 0;                        // makeup gain level (dB)
+    c.c = -0.0;                     // clipping level (dB)    
+    c.d = 0;                        // distortion ratio   
+
+#endif
+
+#ifdef COMP_SETUP_SNARE
+    c.g = 10;                       // pre-gain level (dB)
+    c.r = 20;                       // compress ratio
+    c.th = -16;                     // threshold level (dB)
+    c.k = 0;                        // knee-width (dB)
+    c.att = 0;                      // attack (us)
+    c.rlt = 250;                    // release (ms)
+    c.m = 0;                        // makeup gain level (dB)
+    c.c = -0.1;                     // clipping level (dB)    
+    c.d = 0;                        // distortion ratio   
+#endif
+
+#ifdef COMP_SETUP_DRUMS
+    c.g = 10;                       // pre-gain level (dB)
+    c.r = 30;                       // compress ratio
+    c.th = -26;                     // threshold level (dB)
+    c.k = 0;                        // knee-width (dB)
+    c.att = 0;                      // attack (us)
+    c.rlt = 250;                    // release (ms)
+    c.m = 0;                        // makeup gain level (dB)
+    c.c = -0.1;                     // clipping level (dB)
+    c.d = 0;                        // distortion ratio
+#endif
+
+#ifdef COMP_SETUP_CLEANGUITARS
+    c.g = 10;                       // pre-gain level (dB)
+    c.r = 8;                       // compress ratio
+    c.th = -10;                     // threshold level (dB)
+    c.k = 2;                        // knee-width (dB)
+    c.att = 0;                      // attack (us)
+    c.rlt = 120;                    // release (ms)
+    c.m = 0;                        // makeup gain level (dB)
+    c.c = -0.1;                     // clipping level (dB)
+    c.d = 0;                        // distortion ratio
+#endif
 
     // Creates a stereo compressor sharing the configuration
-    comp_t cL = comp_init(&c);
-    comp_t cR = comp_init(&c);
+    comp_t cL, cR;
+    comp_init_stereo(&c, &cL, &cR);
+
+#define BYPASS_R
 
     for(;;){
 
@@ -212,9 +315,17 @@ int main(int argc, char* argv[])
             DWT_Reset();
             for(i = 0; i < (WOLFSON_PI_AUDIO_TXRX_BUFFER_SIZE / 2); i++){
                 if (i % 2){
+#ifdef BYPASS_L
+                    TxBuffer[i] = RxBuffer[i];
+#else
                     TxBuffer[i] = comp(RxBuffer[i], &cL);
+#endif
                 }else{
-                    TxBuffer[i] = RxBuffer[i];//comp(RxBuffer[i], &cR);
+#ifdef BYPASS_R
+                    TxBuffer[i] = RxBuffer[i];
+#else
+                    TxBuffer[i] = comp(RxBuffer[i], &cR);
+#endif
                 }
             }
             buffer_offset = BUFFER_OFFSET_NONE;
@@ -224,9 +335,17 @@ int main(int argc, char* argv[])
             DWT_Reset();
             for(i = (WOLFSON_PI_AUDIO_TXRX_BUFFER_SIZE / 2); i < WOLFSON_PI_AUDIO_TXRX_BUFFER_SIZE; i++){
                 if (i % 2){
+#ifdef BYPASS_L
+                    TxBuffer[i] = RxBuffer[i];
+#else
                     TxBuffer[i] = comp(RxBuffer[i], &cL);
+#endif
                 }else{
-                    TxBuffer[i] = RxBuffer[i];//comp(RxBuffer[i], &cR);
+#ifdef BYPASS_R
+                    TxBuffer[i] = RxBuffer[i];
+#else
+                    TxBuffer[i] = comp(RxBuffer[i], &cR);
+#endif
                 }
             }
             buffer_offset = BUFFER_OFFSET_NONE;
