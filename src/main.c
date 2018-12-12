@@ -1,26 +1,65 @@
-#include <stm32f4xx.h>
 #include <arm_math.h>
-#include <stm32f4_discovery.h>
-#include <stm32f4_discovery_accelerometer.h>
+//#include <stm32f4xx.h>
+//#include <stm32f4xx_hal.h>
+//#include <stm32f4xx_hal_gpio.h>
+//#include <stm32f4_discovery.h>
 #include <wolfson_pi_audio.h>
-#include <diag/Trace.h>
-#include <tests.h>
 #include <dwt.h>
 #include <fasteraprox/fastpow.h>
 #include <fasteraprox/fastlog.h>
 #include <fasteraprox/fastexp.h>
 #define fasterlog10(x)  (0.3010299956639812f * fasterlog2(x))
 
+#define SETUP_LIVE      // SETUP_LIVE or SETUP_TEST?
+
+#ifdef SETUP_LIVE
+  #define INPUT_MONO_L
+  #define OUTPUT_STEREO
+  //#define COMP_SETUP_NONE
+  #define COMP_SETUP_CUSTOM
+  #define VOLUME  70
+#endif
+
+#ifdef SETUP_TEST
+  #define INPUT_STEREO
+  #define BYPASS_R
+  #define VOLUME  76
+  #define COMP_SETUP_CLEANGUITARS
+#endif
+
 int16_t TxBuffer[WOLFSON_PI_AUDIO_TXRX_BUFFER_SIZE];
 int16_t RxBuffer[WOLFSON_PI_AUDIO_TXRX_BUFFER_SIZE];
 
 __IO BUFFER_StateTypeDef buffer_offset = BUFFER_OFFSET_NONE;
-__IO uint8_t Volume = 76;     // -6dB
+__IO uint8_t Volume = VOLUME;
+GPIO_InitTypeDef GPIO_InitStructure;
 
 #define i2f(x)  ((float32_t)x/(2*32768.0))
 #define f2i(x)  ((int16_t)(x*2*32768))
 #define FALSE 0
 #define TRUE 1
+
+// Leds macros
+// LED0 -> green    right
+// LED1 -> orange   up
+// LED2 -> red      left
+// LED3 -> blue     down
+#define LED0_on()     HAL_GPIO_WritePin(GPIOD, GPIO_PIN_12, GPIO_PIN_SET)
+#define LED1_on()     HAL_GPIO_WritePin(GPIOD, GPIO_PIN_13, GPIO_PIN_SET)
+#define LED2_on()     HAL_GPIO_WritePin(GPIOD, GPIO_PIN_14, GPIO_PIN_SET)
+#define LED3_on()     HAL_GPIO_WritePin(GPIOD, GPIO_PIN_15, GPIO_PIN_SET)
+#define LED0_off()    HAL_GPIO_WritePin(GPIOD, GPIO_PIN_12, GPIO_PIN_RESET)
+#define LED1_off()    HAL_GPIO_WritePin(GPIOD, GPIO_PIN_13, GPIO_PIN_RESET)
+#define LED2_off()    HAL_GPIO_WritePin(GPIOD, GPIO_PIN_14, GPIO_PIN_RESET)
+#define LED3_off()    HAL_GPIO_WritePin(GPIOD, GPIO_PIN_15, GPIO_PIN_RESET)
+#define LED0_tg()     HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_12) ? LED0_on() : LED0_off()
+#define LED1_tg()     HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_13) ? LED1_on() : LED1_off()
+#define LED2_tg()     HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_14) ? LED2_on() : LED2_off()
+#define LED3_tg()     HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_15) ? LED3_on() : LED3_off()
+
+// Buttons Macros
+#define BT0_on()      (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) == GPIO_PIN_SET)
+#define BT0_off()     (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) == GPIO_PIN_RESET)
 
 /**
  * @brief   Compressor with pre-gain, makeup, saturation and clipping adjustments.
@@ -79,7 +118,49 @@ void init(void)
     WOLFSON_PI_AUDIO_SetMute(AUDIO_MUTE_ON);
     WOLFSON_PI_AUDIO_Play(TxBuffer, RxBuffer, WOLFSON_PI_AUDIO_TXRX_BUFFER_SIZE);
     WOLFSON_PI_AUDIO_SetVolume(Volume);
-    //TEST_Init();
+
+    //Push Button
+    __GPIOA_CLK_ENABLE();
+    GPIO_InitStructure.Pin   = GPIO_PIN_0;
+    GPIO_InitStructure.Mode  = GPIO_MODE_INPUT;
+    GPIO_InitStructure.Pull  = GPIO_NOPULL;
+    //GPIO_InitStructure.Speed = GPIO_SPEED_HIGH;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStructure);
+
+    //LED:
+    __GPIOD_CLK_ENABLE();
+    GPIO_InitStructure.Pin   = GPIO_PIN_12;
+    GPIO_InitStructure.Mode  = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStructure.Pull  = GPIO_PULLUP;
+    GPIO_InitStructure.Speed = GPIO_SPEED_HIGH;
+    HAL_GPIO_Init(GPIOD, &GPIO_InitStructure);
+
+    __GPIOD_CLK_ENABLE();
+    GPIO_InitStructure.Pin   = GPIO_PIN_13;
+    GPIO_InitStructure.Mode  = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStructure.Pull  = GPIO_PULLUP;
+    GPIO_InitStructure.Speed = GPIO_SPEED_HIGH;
+    HAL_GPIO_Init(GPIOD, &GPIO_InitStructure);
+
+    __GPIOD_CLK_ENABLE();
+    GPIO_InitStructure.Pin   = GPIO_PIN_14;
+    GPIO_InitStructure.Mode  = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStructure.Pull  = GPIO_PULLUP;
+    GPIO_InitStructure.Speed = GPIO_SPEED_HIGH;
+    HAL_GPIO_Init(GPIOD, &GPIO_InitStructure);
+
+    __GPIOD_CLK_ENABLE();
+    GPIO_InitStructure.Pin   = GPIO_PIN_15;
+    GPIO_InitStructure.Mode  = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStructure.Pull  = GPIO_PULLUP;
+    GPIO_InitStructure.Speed = GPIO_SPEED_HIGH;
+    HAL_GPIO_Init(GPIOD, &GPIO_InitStructure);
+
+    LED0_on();
+    LED1_on();
+    LED2_on();
+    LED3_on();
+
 }
 
 void comp_param_init(comp_conf_t *c)
@@ -151,6 +232,7 @@ int16_t comp(int16_t b, comp_t *c)
 
     // Threshold detection
     if((c->s * c->x) > c->param->k1_){      // Attack
+        LED0_on();
         if(!c->param->satt){    
             c->attacking = TRUE;            // zero-attack case
             c->rd = c->param->r;            // Fully closed
@@ -163,6 +245,7 @@ int16_t comp(int16_t b, comp_t *c)
             }
         }
     }else{                                  // Release
+        LED0_off();
         if(!c->param->srlt){                // zero-release case
             c->releasing = TRUE;
             if(c->gate){
@@ -181,6 +264,7 @@ int16_t comp(int16_t b, comp_t *c)
 
     // Ballistic
     if(c->attacking){
+        LED1_on();
         if(c->sba < c->param->satt){
             // Count samples before Attack
             c->sba++;
@@ -189,9 +273,11 @@ int16_t comp(int16_t b, comp_t *c)
             //c->rd = c->param->r +(1 -c->param->r) * expf(-5 * c->sba / c->param->satt);
             c->attacking = TRUE;
         }else{
+            //LED1_off();
             c->attacking = FALSE;
         }
     }else if(c->releasing){
+        LED1_on();
         // Count samples before Release
         if(c->sbr < c->param->srlt){
             c->sbr++;
@@ -200,6 +286,7 @@ int16_t comp(int16_t b, comp_t *c)
             //c->rd = 1 +(1 -c->param->r) * expf(-5 * c->sbr / c->param->srlt);
             c->releasing = TRUE;
         }else{
+            //LED1_off();
             c->releasing = FALSE;
             c->gate = FALSE;
         }
@@ -211,19 +298,27 @@ int16_t comp(int16_t b, comp_t *c)
         //c->x -= (c->s * c->param->d * (-1 +expf(c->s * c->x)));
     }
 
+    // Buttons interface
+    // A/B test
+    if(BT0_on()){
+        LED3_on();
+        c->gate = c->attacking = c->releasing = FALSE;
+    }
+
     // Compression
     if(c->gate || c->attacking || c->releasing){
+        LED3_on();
         // Convert to dB
         c->x = 20 * fasterlog10(c->s * c->x);
         //c->x = 20 * log10f(c->s * c->x);
     
         // Soft knee
-        if(c->x < c->param->k2){
-            // On knee region, compress using a second order interpolation
-            c->x += ((c->param->r -1) * (c->x -c->param->th +c->param->k) * (c->x -c->param->th +c->param->k) / (4 * c->param->k));
-        }else{
+        if((c->x >= c->param->k2) || c->releasing){
             // Above knee region, hard compress:
             c->x = ((c->x -c->param->th) * c->param->r) +c->param->th;
+        }else{
+            // On knee region, compress using a second order interpolation
+            c->x += ((c->param->r -1) * (c->x -c->param->th +c->param->k) * (c->x -c->param->th +c->param->k) / (4 * c->param->k));
         }
     
         // Get back from dB
@@ -235,7 +330,15 @@ int16_t comp(int16_t b, comp_t *c)
     c->x *= c->param->m_;
 
     // Hard clip
-    if((c->s * c->x) > c->param->c_) c->x = c->s * c->param->c_;
+    if((c->s * c->x) > c->param->c_){
+        LED2_on();
+        c->x = c->s * c->param->c_;
+    }else{
+        LED0_off();
+        LED1_off();
+        LED2_off();
+        LED3_off();
+    }
 
     // Convert back to int
     return f2i(c->x);
@@ -251,8 +354,6 @@ int main(int argc, char* argv[])
 
     // Creates the compressor setup
     comp_conf_t c;
-
-#define COMP_SETUP_DRUMS
 
 #ifdef COMP_SETUP_NONE
     c.g = 0;                        // pre-gain level (dB)
@@ -303,11 +404,38 @@ int main(int argc, char* argv[])
     c.d = 0;                        // distortion ratio
 #endif
 
+#ifdef COMP_SETUP_CUSTOM
+    c.g = 0;                       // pre-gain level (dB)
+    c.r = 20;                       // compress ratio
+    c.th = -30;                     // threshold level (dB)
+    c.k = 2;                        // knee-width (dB)
+    c.att = 1;                      // attack (us)
+    c.rlt = 10;                    // release (ms)
+    c.m = 0;                        // makeup gain level (dB)
+    c.c = -0.1;                     // clipping level (dB)
+    c.d = 0;                        // distortion ratio
+#endif
+
+#ifdef OUTPUT_STEREO
     // Creates a stereo compressor sharing the configuration
     comp_t cL, cR;
     comp_init_stereo(&c, &cL, &cR);
+#endif
+#ifdef BYPASS_L
+    comp_t cR;
+    comp_init_mono(&c, &cR);
+#endif
+#ifdef BYPASS_R
+    comp_t cL;
+    comp_init_mono(&c, &cL);
+#endif
 
-#define BYPASS_R
+    LED0_off();
+    LED1_off();
+    LED2_off();
+    LED3_off();
+
+    //int32_t _r = c.r;
 
     for(;;){
 
@@ -316,15 +444,31 @@ int main(int argc, char* argv[])
             for(i = 0; i < (WOLFSON_PI_AUDIO_TXRX_BUFFER_SIZE / 2); i++){
                 if (i % 2){
 #ifdef BYPASS_L
+  #ifdef INPUT_MONO_R
+                    TxBuffer[i] = RxBuffer[i+1];
+  #else
                     TxBuffer[i] = RxBuffer[i];
+  #endif
 #else
+  #ifdef INPUT_MONO_R
+                    TxBuffer[i] = comp(RxBuffer[i+1], &cL);
+  #else
                     TxBuffer[i] = comp(RxBuffer[i], &cL);
+  #endif
 #endif
                 }else{
 #ifdef BYPASS_R
+  #ifdef INPUT_MONO_L
+                    TxBuffer[i] = RxBuffer[i-1];
+  #else
                     TxBuffer[i] = RxBuffer[i];
+  #endif
 #else
+  #ifdef INPUT_MONO_L
+                    TxBuffer[i] = comp(RxBuffer[i-1], &cR);
+  #else
                     TxBuffer[i] = comp(RxBuffer[i], &cR);
+  #endif
 #endif
                 }
             }
@@ -336,15 +480,31 @@ int main(int argc, char* argv[])
             for(i = (WOLFSON_PI_AUDIO_TXRX_BUFFER_SIZE / 2); i < WOLFSON_PI_AUDIO_TXRX_BUFFER_SIZE; i++){
                 if (i % 2){
 #ifdef BYPASS_L
+  #ifdef INPUT_MONO_R
+                    TxBuffer[i] = RxBuffer[i+1];
+  #else
                     TxBuffer[i] = RxBuffer[i];
+  #endif
 #else
+  #ifdef INPUT_MONO_R
+                    TxBuffer[i] = comp(RxBuffer[i+1], &cL);
+  #else
                     TxBuffer[i] = comp(RxBuffer[i], &cL);
+  #endif
 #endif
                 }else{
 #ifdef BYPASS_R
+  #ifdef INPUT_MONO_L
+                    TxBuffer[i] = RxBuffer[i-1];
+  #else
                     TxBuffer[i] = RxBuffer[i];
+  #endif
 #else
+  #ifdef INPUT_MONO_L
+                    TxBuffer[i] = comp(RxBuffer[i-1], &cR);
+  #else
                     TxBuffer[i] = comp(RxBuffer[i], &cR);
+  #endif
 #endif
                 }
             }
