@@ -13,7 +13,10 @@
 #define SETUP_LIVE      // SETUP_LIVE or SETUP_TEST?
 
 #ifdef SETUP_LIVE
-  #define INPUT_MONO_L
+  #define INPUT_MONO_R
+  //#define INPUT_MONO_L
+  //#define INPUT_STEREO
+  //#define INPUT_CROSS
   #define OUTPUT_STEREO
   //#define COMP_SETUP_NONE
   #define COMP_SETUP_CUSTOM
@@ -61,17 +64,29 @@ GPIO_InitTypeDef GPIO_InitStructure;
 #define BT0_on()      (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) == GPIO_PIN_SET)
 #define BT0_off()     (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) == GPIO_PIN_RESET)
 
+// Left-Right matrix selection macros
+#ifdef BYPASS_L
+  #define FUN_L(i)  RxBuffer[i]
+#else
+  #define FUN_L(i)  comp(RxBuffer[i], &cL);
+#endif
+#ifdef BYPASS_R
+  #define FUN_R(i)  RxBuffer[i]
+#else
+  #define FUN_R(i)  comp(RxBuffer[i], &cR);
+#endif
+
 /**
  * @brief   Compressor with pre-gain, makeup, saturation and clipping adjustments.
  * @param   x is the signal (not in dB), array from -1 to 1;
  * @param   g is the pre-gain level (dB), from -10 to 10;
- * @param   r is the compression ratio, from 0 to 100;
- * @param   th is the threshold level (dB),from -100 to 0;
- * @param   k is the knee-width (dB), from 0 to threshold dB level
- * @param   att is the attack time (ms), from 0 to 500ms
- * @param   rlt is the release time (ms), from 0 to 500ms
- * @param   m is the makeup gain level (dB), from -100 to 100;
- * @param   c is the clip level (dB), from 0 to -100;
+ * @param   r is the compression ratio, from 0 to 30;
+ * @param   th is the threshold level (dB),from -40 to 0;
+ * @param   k is the knee-width (dB), from 0 to threshold dB level or -10;
+ * @param   att is the attack time (ms), from 0 to 100ms;
+ * @param   rlt is the release time (ms), from 0 to 1000ms;
+ * @param   m is the makeup gain level (dB), from -10 to 10;
+ * @param   c is the clip level (dB), from 0 to -10;
  * @param   d is the saturation ratio, from 0 to 1
  */
 typedef struct comp_conf_t{
@@ -168,16 +183,19 @@ void comp_param_init(comp_conf_t *c)
     // Apply parameters limits
     if(c->g > 10)          c->g = 10;
     else if(c->g < -10)    c->g = -10;
-    if(c->r > 100)         c->r = 100;
-    else if(c->r <= 0)     c->r = 0;
+    if(c->r > 30)          c->r = 30;
+    else if(c->r < 1)      c->r = 1;
     if(c->th > 0)          c->th = 0;
-    else if(c->th < -100)  c->th = -100;
+    else if(c->th < -40)   c->th = -40;
     if(c->k < 0)           c->k = 0;
     else if(c->k > -c->th) c->k = -c->th;
-    if(c->att > 500)       c->att = 500;
-    if(c->rlt > 500)       c->rlt = 500;
-    if(c->m > 100)         c->m = 100;
-    else if(c->m < -100)   c->m = -100;
+    if(c->k < -10)         c->k = -10;
+    if(c->att > 100)       c->att = 100;
+    if(c->att < 0)         c->att = 0;
+    if(c->rlt > 1000)      c->rlt = 1000;
+    if(c->rlt < 0)         c->rlt = 0;
+    if(c->m > 10)          c->m = 10;
+    else if(c->m < -10)    c->m = -10;
     if(c->c > 0)           c->c = 0;
     else if(c->c < -10)    c->c = -10;
     if(c->d < 0)           c->d = 0;
@@ -192,7 +210,7 @@ void comp_param_init(comp_conf_t *c)
     c->k1_ = powf(10, c->k1 / 20);    // knee minimum level
     c->k2 = c->th +c->k;              // knee maximum level (dB)
 
-    //if(r == 0) r = 1;           // protects for division
+    //if(r == 0) r = 1;               // protects for division
     c->r = 1 / c->r;                  // ratio to multiply instead divide
     c->d = c->d / 10;                 // distortion ratio
     c->satt = floor(AUDIO_FREQUENCY_48K * c->att / 1000);   // attack (samples)
@@ -231,33 +249,26 @@ int16_t comp(int16_t b, comp_t *c)
     else             c->s = 1;
 
     // Threshold detection
-    if((c->s * c->x) > c->param->k1_){      // Attack
+    if((c->s * c->x) >= c->param->k1_){      // Attack
         LED0_on();
-        if(!c->param->satt){    
-            c->attacking = TRUE;            // zero-attack case
+        if(!c->param->satt){                // zero-attack case
+            c->gate = TRUE;
             c->rd = c->param->r;            // Fully closed
-        }else if(!c->gate){
-            if(!c->attacking){
-                c->attacking = TRUE;
-                c->sba = 0;
-                c->releasing = FALSE;
-                c->gate = TRUE;
-            }
+        }else if(!c->attacking && !c->releasing){
+            c->attacking = TRUE;
+            c->gate = FALSE;
+            c->sba = 0;
         }
     }else{                                  // Release
         LED0_off();
         if(!c->param->srlt){                // zero-release case
-            c->releasing = TRUE;
-            if(c->gate){
-                c->gate = FALSE;
-                c->rd = 1;                  // Fully open
-            }
+            c->gate = FALSE;
+            c->rd = 1;                      // Fully open
         }else if(c->gate){
-            if(!c->releasing){
+            if(!c->releasing && !c->attacking){
                 c->releasing = TRUE;
+                c->gate = FALSE;
                 c->sbr = 0;
-                c->attacking = FALSE;
-                c->gate = TRUE;
             }
         }
     }
@@ -267,64 +278,59 @@ int16_t comp(int16_t b, comp_t *c)
         LED1_on();
         if(c->sba < c->param->satt){
             // Count samples before Attack
-            c->sba++;
             // Closing transition
             c->rd = c->param->r +(1 -c->param->r) * fasterexp(-5 * c->sba / c->param->satt);
             //c->rd = c->param->r +(1 -c->param->r) * expf(-5 * c->sba / c->param->satt);
-            c->attacking = TRUE;
+            c->sba++;
         }else{
-            //LED1_off();
             c->attacking = FALSE;
+            c->gate = TRUE;
         }
     }else if(c->releasing){
         LED1_on();
+        c->gate = FALSE;
         // Count samples before Release
         if(c->sbr < c->param->srlt){
-            c->sbr++;
             // Opening transition
             c->rd = 1 +(1 -c->param->r) * fasterexp(-5 * c->sbr / c->param->srlt);
             //c->rd = 1 +(1 -c->param->r) * expf(-5 * c->sbr / c->param->srlt);
-            c->releasing = TRUE;
+            c->sbr++;
         }else{
-            //LED1_off();
             c->releasing = FALSE;
-            c->gate = FALSE;
         }
     }
 
     // Adds a bit of saturation
-    if(c->param->srlt && c->param->satt){
-        c->x -= (c->s * c->param->d * (-1 +fasterexp(c->s * c->x)));
+    //if(c->param->srlt && c->param->satt){
+    //    c->x -= (c->s * c->param->d * (-1 +fasterexp(c->s * c->x)));
         //c->x -= (c->s * c->param->d * (-1 +expf(c->s * c->x)));
-    }
+    //}
 
     // Buttons interface
     // A/B test
     if(BT0_on()){
         LED3_on();
-        c->gate = c->attacking = c->releasing = FALSE;
+        c->rd = 1;
     }
 
-    // Compression
-    if(c->gate || c->attacking || c->releasing){
+    // Convert to dB
+    c->x = 20 * fasterlog10(c->s * c->x);
+    //c->x = 20 * log10f(c->s * c->x);
+
+    // Soft knee
+    if(c->x >= c->param->k2){
         LED3_on();
-        // Convert to dB
-        c->x = 20 * fasterlog10(c->s * c->x);
-        //c->x = 20 * log10f(c->s * c->x);
-    
-        // Soft knee
-        if((c->x >= c->param->k2) || c->releasing){
-            // Above knee region, hard compress:
-            c->x = ((c->x -c->param->th) * c->param->r) +c->param->th;
-        }else{
-            // On knee region, compress using a second order interpolation
-            c->x += ((c->param->r -1) * (c->x -c->param->th +c->param->k) * (c->x -c->param->th +c->param->k) / (4 * c->param->k));
-        }
-    
-        // Get back from dB
-        c->x = c->s * fasterpow(10, c->x / 20);
-        //c->x = c->s * powf(10, c->x / 20);
+        // Above knee region, hard compress:
+        c->x = ((c->x -c->param->th) * c->rd) +c->param->th;
+    }else if(c->x >= c->param->k1){
+        LED3_on();
+        // On knee region, compress using a second order interpolation
+        c->x += ((c->rd -1) * (c->x -c->param->th +c->param->k) * (c->x -c->param->th +c->param->k) / (4 * c->param->k));
     }
+
+    // Get back from dB
+    c->x = c->s * fasterpow(10, c->x / 20);
+    //c->x = c->s * powf(10, c->x / 20);
 
     // Makeup gain
     c->x *= c->param->m_;
@@ -354,6 +360,18 @@ int main(int argc, char* argv[])
 
     // Creates the compressor setup
     comp_conf_t c;
+
+#ifdef COMP_SETUP_CUSTOM
+    c.g = 0;                        // pre-gain level (dB)
+    c.r = 20;                       // compress ratio
+    c.th = -30;                     // threshold level (dB)
+    c.k = 0;                        // knee-width (dB)
+    c.att = 50;                      // attack (us)
+    c.rlt = 100;                      // release (ms)
+    c.m = 0;                        // makeup gain level (dB)
+    c.c = -0.1;                     // clipping level (dB)
+    c.d = 0;                        // distortion ratio
+#endif
 
 #ifdef COMP_SETUP_NONE
     c.g = 0;                        // pre-gain level (dB)
@@ -394,7 +412,7 @@ int main(int argc, char* argv[])
 
 #ifdef COMP_SETUP_CLEANGUITARS
     c.g = 10;                       // pre-gain level (dB)
-    c.r = 8;                       // compress ratio
+    c.r = 8;                        // compress ratio
     c.th = -10;                     // threshold level (dB)
     c.k = 2;                        // knee-width (dB)
     c.att = 0;                      // attack (us)
@@ -404,17 +422,6 @@ int main(int argc, char* argv[])
     c.d = 0;                        // distortion ratio
 #endif
 
-#ifdef COMP_SETUP_CUSTOM
-    c.g = 0;                       // pre-gain level (dB)
-    c.r = 20;                       // compress ratio
-    c.th = -30;                     // threshold level (dB)
-    c.k = 2;                        // knee-width (dB)
-    c.att = 1;                      // attack (us)
-    c.rlt = 10;                    // release (ms)
-    c.m = 0;                        // makeup gain level (dB)
-    c.c = -0.1;                     // clipping level (dB)
-    c.d = 0;                        // distortion ratio
-#endif
 
 #ifdef OUTPUT_STEREO
     // Creates a stereo compressor sharing the configuration
@@ -442,35 +449,26 @@ int main(int argc, char* argv[])
         if(buffer_offset == BUFFER_OFFSET_HALF){
             DWT_Reset();
             for(i = 0; i < (WOLFSON_PI_AUDIO_TXRX_BUFFER_SIZE / 2); i++){
-                if (i % 2){
-#ifdef BYPASS_L
-  #ifdef INPUT_MONO_R
-                    TxBuffer[i] = RxBuffer[i+1];
-  #else
-                    TxBuffer[i] = RxBuffer[i];
-  #endif
-#else
-  #ifdef INPUT_MONO_R
-                    TxBuffer[i] = comp(RxBuffer[i+1], &cL);
-  #else
-                    TxBuffer[i] = comp(RxBuffer[i], &cL);
-  #endif
+#ifdef INPUT_STEREO                                 // L -> L, R -> R:
+                    TxBuffer[i] = FUN_L(i);
+                    i++;
+                    TxBuffer[i] = FUN_R(i);
 #endif
-                }else{
-#ifdef BYPASS_R
-  #ifdef INPUT_MONO_L
-                    TxBuffer[i] = RxBuffer[i-1];
-  #else
-                    TxBuffer[i] = RxBuffer[i];
-  #endif
-#else
-  #ifdef INPUT_MONO_L
-                    TxBuffer[i] = comp(RxBuffer[i-1], &cR);
-  #else
-                    TxBuffer[i] = comp(RxBuffer[i], &cR);
-  #endif
+#ifdef INPUT_MONO_L                                 // L -> L, L -> R:
+                    TxBuffer[i] = FUN_L(i);
+                    TxBuffer[i+1] = FUN_R(i);
+                    i++;
 #endif
-                }
+#ifdef INPUT_MONO_R                                 // R -> L, R -> R:
+                    TxBuffer[i] = FUN_L(i+1);
+                    TxBuffer[i+1] = FUN_R(i+1);
+                    i++;
+#endif
+#ifdef INPUT_CROSS                                  // L -> R, R -> L:
+                    TxBuffer[i] = FUN_L(i+1);
+                    TxBuffer[i+1] = FUN_R(i);
+                    i++;
+#endif
             }
             buffer_offset = BUFFER_OFFSET_NONE;
         }
@@ -478,35 +476,26 @@ int main(int argc, char* argv[])
         if(buffer_offset == BUFFER_OFFSET_FULL){
             DWT_Reset();
             for(i = (WOLFSON_PI_AUDIO_TXRX_BUFFER_SIZE / 2); i < WOLFSON_PI_AUDIO_TXRX_BUFFER_SIZE; i++){
-                if (i % 2){
-#ifdef BYPASS_L
-  #ifdef INPUT_MONO_R
-                    TxBuffer[i] = RxBuffer[i+1];
-  #else
-                    TxBuffer[i] = RxBuffer[i];
-  #endif
-#else
-  #ifdef INPUT_MONO_R
-                    TxBuffer[i] = comp(RxBuffer[i+1], &cL);
-  #else
-                    TxBuffer[i] = comp(RxBuffer[i], &cL);
-  #endif
+#ifdef INPUT_STEREO                                 // L -> L, R -> R:
+                    TxBuffer[i] = FUN_L(i);
+                    i++;
+                    TxBuffer[i] = FUN_R(i);
 #endif
-                }else{
-#ifdef BYPASS_R
-  #ifdef INPUT_MONO_L
-                    TxBuffer[i] = RxBuffer[i-1];
-  #else
-                    TxBuffer[i] = RxBuffer[i];
-  #endif
-#else
-  #ifdef INPUT_MONO_L
-                    TxBuffer[i] = comp(RxBuffer[i-1], &cR);
-  #else
-                    TxBuffer[i] = comp(RxBuffer[i], &cR);
-  #endif
+#ifdef INPUT_MONO_L                                 // L -> L, L -> R:
+                    TxBuffer[i] = FUN_L(i);
+                    TxBuffer[i+1] = FUN_R(i);
+                    i++;
 #endif
-                }
+#ifdef INPUT_MONO_R                                 // R -> L, R -> R:
+                    TxBuffer[i] = FUN_L(i+1);
+                    TxBuffer[i+1] = FUN_R(i+1);
+                    i++;
+#endif
+#ifdef INPUT_CROSS                                  // L -> R, R -> L:
+                    TxBuffer[i] = FUN_L(i+1);
+                    TxBuffer[i+1] = FUN_R(i);
+                    i++;
+#endif
             }
             buffer_offset = BUFFER_OFFSET_NONE;
         }
