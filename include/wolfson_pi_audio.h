@@ -6,7 +6,7 @@
 #include <wm5102/wm5102.h>
 
 /* Size of buffer (Multiple of 4096, RAM_BUFFER_SIZE used in BSP) */
-#define WOLFSON_PI_AUDIO_TXRX_BUFFER_SIZE           				0x1000
+#define WOLFSON_PI_AUDIO_TXRX_BUFFER_SIZE           				64
 
 #define WOLFSON_PI_AUDIO_LED_PIN                            		GPIO_PIN_10
 #define WOLFSON_PI_AUDIO_LED_CLK_ENABLE()                   		__GPIOE_CLK_ENABLE()

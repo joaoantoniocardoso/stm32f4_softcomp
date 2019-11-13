@@ -629,9 +629,9 @@ uint32_t wm5102_Stop(uint16_t DeviceAddr, uint32_t CodecPdwnMode)
 uint32_t wm5102_SetVolume(uint16_t DeviceAddr, uint8_t Volume)
 {
   uint32_t counter = 0;
-  uint8_t convertedvol = VOLUME_CONVERT(Volume);
+//  uint8_t convertedvol = VOLUME_CONVERT(Volume);
 
-  if(convertedvol > 0xBF)
+  if(Volume > 0xBF)
   {
     /* Unmute audio codec */
     counter += wm5102_SetMute(DeviceAddr, AUDIO_MUTE_OFF);
@@ -651,10 +651,10 @@ uint32_t wm5102_SetVolume(uint16_t DeviceAddr, uint8_t Volume)
     /* Unmute audio codec */
     counter += wm5102_SetMute(DeviceAddr, AUDIO_MUTE_OFF);
 
-	counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_DAC_DIGITAL_VOLUME_2L, convertedvol | 0x0200); // DAC 2 volume L 0dB (LINE OUT)
-	counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_DAC_DIGITAL_VOLUME_2R, convertedvol | 0x0200); // DAC 2 volume R 0dB (LINE OUT)
-	counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_DAC_DIGITAL_VOLUME_1L, convertedvol | 0x0200); // DAC 1 volume L 0dB (HP OUT)
-	counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_DAC_DIGITAL_VOLUME_1R, convertedvol | 0x0200); // DAC 1 volume R 0dB (HP OUT)
+	counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_DAC_DIGITAL_VOLUME_2L, Volume | 0x0200); // DAC 2 volume L 0dB (LINE OUT)
+	counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_DAC_DIGITAL_VOLUME_2R, Volume | 0x0200); // DAC 2 volume R 0dB (LINE OUT)
+	counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_DAC_DIGITAL_VOLUME_1L, Volume | 0x0200); // DAC 1 volume L 0dB (HP OUT)
+	counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_DAC_DIGITAL_VOLUME_1R, Volume | 0x0200); // DAC 1 volume R 0dB (HP OUT)
   }
 
   return counter;
@@ -836,10 +836,14 @@ uint32_t wm5102_SetInputMode(uint16_t DeviceAddr, uint8_t Input)
 			InputSourceL = 0x0014; // LHPF1 mixer from IN3 (LINE IN)
 			InputSourceR = 0x0015; // LHPF2 mixer from IN3
 			counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_INPUT_ENABLES, 0x0030); // enable IN3L and IN3R 0030 LINE IN
-			counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_IN3L_CONTROL, 0x2290); // IN3L PGA gain +8.0dB LINE IN (potential divider comp.)
-			counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_ADC_DIGITAL_VOLUME_3L, 0x0280); // IN3L ADC volume 0dB LINE IN
-			counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_IN3R_CONTROL, 0x0090); // IN3R PGA gain +8.0dB LINE IN (potential divider comp.)
-			counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_ADC_DIGITAL_VOLUME_3R, 0x0280); // IN3R ADC volume 0dB LINE IN
+//			counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_IN3L_CONTROL, 0x2290); // IN3L PGA gain +8.0dB LINE IN (potential divider comp.)
+//			counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_IN3R_CONTROL, 0x2290); // IN3R PGA gain +8.0dB LINE IN (potential divider comp.)
+//			counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_ADC_DIGITAL_VOLUME_3L, 0x0280); // IN3L ADC volume 0dB LINE IN
+//			counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_ADC_DIGITAL_VOLUME_3R, 0x0280); // IN3R ADC volume 0dB LINE IN
+			counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_IN3L_CONTROL, 0x2292); // IN3L PGA gain +8.0dB LINE IN (potential divider comp.)
+			counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_IN3R_CONTROL, 0x0092); // IN3R PGA gain +8.0dB LINE IN (potential divider comp.)
+			counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_ADC_DIGITAL_VOLUME_3L, 0x0280); // IN3L ADC volume +0dB LINE IN
+			counter += CODEC_IO_Write(DeviceAddr, WM5102_REG_ADC_DIGITAL_VOLUME_3R, 0x0280); // IN3R ADC volume +0dB LINE IN
 			break;
 		default:
 			InputSourceL = 0x0014; // LHPF1 mixer from IN3 (LINE IN)
